@@ -1,0 +1,17 @@
+AM_CPPFLAGS =
+AM_CFLAGS   =
+AM_CXXFLAGS =
+AM_LDFLAGS  =
+
+AM_CPPFLAGS += $(GTEST_MAIN_CPPFLAGS)
+AM_LDFLAGS  += $(GTEST_MAIN_LIBS)
+
+AM_CPPFLAGS += $(GEOS_CPPFLAGS)
+AM_LDFLAGS  += $(GEOS_LIBS) -lgeos
+
+check_PROGRAMS =
+
+check_PROGRAMS += test-geo
+test_geo_SOURCES = test-geo.cc
+
+TESTS = $(check_PROGRAMS)

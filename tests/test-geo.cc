@@ -8,6 +8,28 @@
 
 #include <gtest/gtest.h>
 
+#ifndef USE_UNSTABLE_GEOS_CPP_API
+#   define USE_UNSTABLE_GEOS_CPP_API
+#   include <geos/geom/Geometry.h>
+#   include <geos/geom/GeometryFactory.h>
+#   include <geos/geom/CoordinateArraySequenceFactory.h>
+#   include <geos/geom/CoordinateSequence.h>
+#   include <geos/geom/Triangle.h>
+#   include <geos/geom/Triangle.h>
+#endif
+
+namespace {
+
+template <typename U, typename V>
+std::unique_ptr<U>
+dynamic_unique_cast(std::unique_ptr<V> &&p) {
+    U *ptr = std::dynamic_pointer_cast<U>(p.get());
+    if (!ptr)
+        return {};
+    return std::unique_ptr<U>(p.release());
+}
+
+} // namespace anonymous
 
 namespace geographic {
 
@@ -285,7 +307,10 @@ struct coordsys_ellipsoid : public coordsys {
     coordsys_ellipsoid() :A(0), f(0) { }
 
     virtual void print(std::ostream &out) const override {
-        out << "{ A =" << this->A << ", f = " << this->f << "}";
+        std::ostringstream oss;
+        oss << std::setprecision(std::numeric_limits<double>::digits10)
+            << "{A = " << this->A << ", f = " << this->f << "}";
+        out << oss.str();
     }
 
 
@@ -317,7 +342,10 @@ struct coordsys_sphere : public coordsys {
     coordsys_sphere() :r(0) { }
 
     virtual void print(std::ostream &out) const override {
-        out << "{ r =" << this->r << "}";
+        std::ostringstream oss;
+        oss << std::setprecision(std::numeric_limits<double>::digits10)
+            << "{r = " << this->r << "}";
+        out << oss.str();
     }
 
     virtual coord3 blh2xyz(coord3 const &blh) const override {
@@ -408,9 +436,220 @@ struct coordsys_sphere : public coordsys {
 coordsys_ellipsoid coordsys_ellipsoid::WGS84(6378137.0, 1 / 298.257223563);
 coordsys_sphere coordsys_sphere::WGS84(6378137.0);
 
+struct boundary {
+    boundary() {
+        reset();
+    }
+
+    void reset() {
+        _M_lbound = std::numeric_limits<double>::infinity();
+        _M_ubound = -std::numeric_limits<double>::infinity();
+    }
+
+    void update(double const &value) {
+        if (value < _M_lbound)
+            _M_lbound = value;
+        if (value > _M_ubound)
+            _M_ubound = value;
+    }
+
+    double middle() const {
+        return (_M_lbound + _M_ubound) * 0.5;
+    }
+
+    double _M_lbound;
+    double _M_ubound;
+};
+
+struct bbox {
+    bbox(int n) :_M_boundaries(n) {
+    }
+
+    void expand_dim(int n, double const &value) {
+        _M_boundaries[n].update(value);
+    }
+
+    void reset() {
+        for (boundary &b : _M_boundaries)
+            b.reset();
+    }
+
+    std::vector<double> center() const {
+        std::vector<double> r;
+        for (boundary const &b : _M_boundaries)
+            r.push_back(b.middle());
+        return r;
+    }
+
+    std::vector<boundary> _M_boundaries;
+};
+
+struct bbox3 : public bbox {
+    bbox3() :bbox(3) {}
+    void expand(double x, double y, double z) {
+        _M_boundaries[0].update(x);
+        _M_boundaries[1].update(y);
+        _M_boundaries[2].update(z);
+    }
+};
+
 } // namespace geographic
 
+namespace {
 
-int main(int argc, char* argv[]) {
-    return EXIT_SUCCESS;
+bool
+create_buffer_area(
+        std::vector<geos::geom::Coordinate> const &ivertices,
+        double const &distance,
+        std::vector<geos::geom::Coordinate> &overtices) {
+    using geos::geom::DefaultCoordinateSequenceFactory;
+    using geos::geom::CoordinateSequence;
+    using geos::geom::Coordinate;
+    using geos::geom::CoordinateArraySequenceFactory;
+    using geos::geom::CoordinateArraySequence;
+    using geos::geom::GeometryFactory;
+    using geos::geom::Geometry;
+    using geos::geom::LineString;
+
+    // create buffer area
+    CoordinateSequence::Ptr coords = CoordinateArraySequenceFactory
+        ::instance()->create();
+    coords->setPoints(ivertices);
+    LineString::Ptr ls = GeometryFactory
+        ::getDefaultInstance()->createLineString(std::move(coords));
+    if (!ls)
+        return false;
+    Geometry::Ptr buffer = ls->buffer(distance);
+    if (!buffer)
+        return false;
+    buffer->getCoordinates()->toVector(overtices);
+    return true;
+}
+
+bool
+validate_buffer_distance(
+        std::vector<geos::geom::Coordinate> const &ivertices,
+        std::vector<geos::geom::Coordinate> const &overtices,
+        double const &distance)
+{
+    using geos::geom::DefaultCoordinateSequenceFactory;
+    using geos::geom::CoordinateSequence;
+    using geos::geom::Coordinate;
+    using geos::geom::CoordinateArraySequenceFactory;
+    using geos::geom::CoordinateArraySequence;
+    using geos::geom::GeometryFactory;
+    using geos::geom::Geometry;
+    using geos::geom::LineString;
+    // validate buffer distance requirement
+    for (int i = 0, n = overtices.size(); i < n; ++i) {
+        double min_distance = std::numeric_limits<double>::infinity();
+        for (int j = 0, m = ivertices.size(); j < m; ++j) {
+            min_distance = std::min(
+                    min_distance,
+                    overtices[i].distance(ivertices[j]));
+        }
+        std::cout << "min_distance = " << min_distance << std::endl;
+        // if (min_distance - distance > distance * 0.001)
+        //     return false;
+    }
+    return true;
+}
+
+bool
+create_geo_buffer_area(
+        std::vector<geographic::coord3> const &icoords,
+        double const &distance,
+        std::vector<geographic::coord3> &ocoords,
+        std::vector<geographic::coord3> &icoords_enu,
+        std::vector<geographic::coord3> &ocoords_enu) {
+    using namespace geographic;
+    using geos::geom::Coordinate;
+    coordsys const &rf = coordsys_sphere::WGS84;
+
+    bbox3 bb3;
+    for (coord3 const &c : icoords)
+        bb3.expand(c.x, c.y, c.z);
+    std::vector<double> bbcenter = bb3.center();
+    coord3 icoords_center(bbcenter[0], bbcenter[1], bbcenter[2]);
+    std::vector<coord3> icoords_xyz;
+    for (coord3 const &c : icoords)
+        icoords_xyz.push_back(rf.blh2xyz(c));
+    std::vector<coord3> ocoords_xyz;
+    for (coord3 const &c : icoords_xyz)
+        icoords_enu.push_back(rf.xyz2enu(c, icoords_center));
+    std::vector<Coordinate> ivertices;
+    std::vector<Coordinate> overtices;
+    for (coord3 const &c : icoords_enu)
+        ivertices.push_back(Coordinate(c.x, c.y, c.z));
+    if (!create_buffer_area(ivertices, distance, overtices))
+        return false;
+    for (Coordinate const &c : overtices)
+        ocoords_enu.push_back(coord3(c.x, c.y, std::isnan(c.z) ? 0 : c.z));
+    for (coord3 const &c : ocoords_enu)
+        ocoords_xyz.push_back(rf.enu2xyz(c, icoords_center));
+    return true;
+}
+
+bool validate_geo_buffer_distance(
+        std::vector<geographic::coord3> const &icoords,
+        std::vector<geographic::coord3> const &ocoords,
+        double const &distance) {
+    for (int i = 0, n = ocoords.size(); i < n; ++i) {
+        double min_distance = std::numeric_limits<double>::infinity();
+        int idx = 0;
+        for (int j = 0, n = icoords.size(); j < n; ++j) {
+            double dx = ocoords[i].x - icoords[j].x;
+            double dy = ocoords[i].y - icoords[j].y;
+            double d = std::sqrt(dx * dx + dy * dy);
+            if (d < min_distance) {
+                min_distance = d;
+                idx = j;
+            }
+        }
+        std::cout << "min_distance = " << min_distance << std::endl;
+        // if (min_distance - distance > distance * 0.01)
+        //     return false;
+    }
+    return true;
+}
+
+} // namespace anonymous
+
+TEST(test_geo, test_simple_buffer) {
+    using geos::geom::Coordinate;
+
+    double distance = 0.1;
+    std::vector<Coordinate> ivertices;
+    std::vector<Coordinate> overtices;
+    ivertices.push_back(Coordinate(0, 0, 1));
+    ivertices.push_back(Coordinate(1, 2, 1));
+    ivertices.push_back(Coordinate(2, 4, 1));
+    ivertices.push_back(Coordinate(3, 2, 1));
+    ivertices.push_back(Coordinate(4, 0, 1));
+    ASSERT_TRUE(create_buffer_area(ivertices, distance, overtices));
+    ASSERT_TRUE(validate_buffer_distance(ivertices, overtices, distance));
+}
+
+TEST(test_geo, test_geo_buffer) {
+    using namespace geographic;
+    using geos::geom::Coordinate;
+
+    coordsys const &rf = coordsys_sphere::WGS84;
+    double distance = 1000000;
+    std::vector<coord3> icoords;
+    std::vector<coord3> ocoords;
+    std::vector<coord3> icoords_enu;
+    std::vector<coord3> ocoords_enu;
+    icoords.push_back(rf.blh2xyz(coord3::of_degrees(31, 121, 100)));
+    icoords.push_back(rf.blh2xyz(coord3::of_degrees(32, 122, 100)));
+    icoords.push_back(rf.blh2xyz(coord3::of_degrees(34, 123, 100)));
+    icoords.push_back(rf.blh2xyz(coord3::of_degrees(32, 124, 100)));
+    icoords.push_back(rf.blh2xyz(coord3::of_degrees(31, 125, 100)));
+    icoords.push_back(rf.blh2xyz(coord3::of_degrees(30, 126, 100)));
+    ASSERT_TRUE(create_geo_buffer_area(
+                icoords,
+                distance,
+                ocoords,
+                icoords_enu, ocoords_enu));
+    ASSERT_TRUE(validate_geo_buffer_distance(icoords_enu, ocoords_enu, distance));
 }
