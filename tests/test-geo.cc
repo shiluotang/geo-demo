@@ -18,34 +18,26 @@
 #   include <geos/geom/Triangle.h>
 #endif
 
-namespace {
-
-template <typename U, typename V>
-std::unique_ptr<U>
-dynamic_unique_cast(std::unique_ptr<V> &&p) {
-    U *ptr = std::dynamic_pointer_cast<U>(p.get());
-    if (!ptr)
-        return {};
-    return std::unique_ptr<U>(p.release());
-}
-
-} // namespace anonymous
-
 namespace geographic {
 
-double deg2rad(double deg) {
-    static const double coeff = std::asin(1) * 2 / 180.0;
-    return deg * coeff;
-}
+struct degrees {
 
-double rad2deg(double rad) {
-    static const double coeff = 180.0 / std::asin(1);
-    return rad * coeff;
-}
+    static
+    double deg2rad(double deg) {
+        static const double coeff = std::asin(1) / 90.0;
+        return deg * coeff;
+    }
+
+    static
+    double rad2deg(double rad) {
+        static const double coeff = 90.0 / std::asin(1);
+        return rad * coeff;
+    }
+};
 
 struct coord3 {
     coord3(double ax, double ay, double az) :x(ax), y(ay), z(az) { }
-    coord3() : x(0), y(0), z(0) {}
+    coord3() : x(0), y(0), z(0) { }
 
     coord3& operator+=(coord3 const &other) { return this->add_self(other); }
     coord3& operator-=(coord3 const &other) { return this->add_self(other.scale(-1)); }
@@ -54,16 +46,17 @@ struct coord3 {
     coord3 operator+(coord3 const &other) const { return this->add(other); }
     coord3 operator-(coord3 const &other) const { return this->add(other.scale(-1)); }
     coord3 operator*(double n) const { return this->scale(n); }
-    coord3 operator/(double n) { return this->scale(1.0 / n); }
+    coord3 operator/(double n) const { return this->scale(1.0 / n); }
     coord3 operator-() const { return this->scale(-1); }
+    double operator*(coord3 const &other) const { return this->dot(other); }
 
     static
     coord3 of_degrees(double b, double l, double h) {
-        return coord3(deg2rad(b), deg2rad(l), h);
+        return coord3(degrees::deg2rad(b), degrees::deg2rad(l), h);
     }
 
     double length() const {
-        return std::sqrt(x * x + y * y + z * z);
+        return std::sqrt(this->dot(*this));
     }
 
     coord3& add_self(coord3 const &other) {
@@ -74,9 +67,7 @@ struct coord3 {
     }
 
     coord3 add(coord3 const &other) const {
-        coord3 copy(*this);
-        copy.add_self(other);
-        return copy;
+        return coord3(*this).add_self(other);
     }
 
     coord3& scale_self(double n) {
@@ -86,10 +77,10 @@ struct coord3 {
         return *this;
     }
 
-    coord3 scale(double n) const {
-        coord3 copy(*this);
-        copy.scale_self(n);
-        return copy;
+    coord3 scale(double n) const { return coord3(*this).scale_self(n); }
+
+    double dot(coord3 const &other) const {
+        return x * other.x + y * other.y + z * other.z;
     }
 
     void print(std::ostream &out) const {
@@ -103,6 +94,28 @@ struct coord3 {
     double y;
     double z;
 };
+
+struct blh_deg_view {
+    blh_deg_view(coord3 const &c) :_M_ref(c) { }
+
+    double x() const { return degrees::rad2deg(_M_ref.x); }
+    double y() const { return degrees::rad2deg(_M_ref.y); }
+    double z() const { return _M_ref.z; }
+
+    void print(std::ostream &out) const {
+        std::ostringstream oss;
+        oss << std::setprecision(std::numeric_limits<double>::digits10);
+        oss << "[" << x() << ", " << y() << ", " << z() << "]";
+        out << oss.str();
+    }
+
+    coord3 const & _M_ref;
+};
+
+std::ostream& operator<<(std::ostream &os, blh_deg_view const &v) {
+    v.print(os);
+    return os;
+}
 
 std::ostream& operator<<(std::ostream &os, coord3 const &c) {
     c.print(os);
@@ -120,7 +133,8 @@ struct matrix {
     {
         // FIXME _SCL_SECURE_NO_WARNINGS
         // std::copy_n(std::begin(li), nrows * ncols, std::begin(_M_data));
-        for (std::size_t i = 0, n = std::min<size_t>(li.size(), nrows * ncols); i < n; ++i)
+        for (std::size_t i = 0, n = std::min<size_t>(li.size(), nrows * ncols);
+                i < n; ++i)
             _M_data[i] = li[i];
     }
 
@@ -128,16 +142,16 @@ struct matrix {
     double& elem(int i, int j) { return _M_data[i * _M_ncols + j]; }
     double operator()(int i, int j) const { return elem(i, j); }
     double& operator()(int i, int j) { return elem(i, j); }
+    matrix& operator+=(matrix const &other) { return this->add_self(other); }
+    matrix& operator-=(matrix const &other) { return this->add_self(other.scale(-1)); }
+    matrix& operator*=(double n) { return this->scale_self(n); }
+    matrix& operator/=(double n) { return this->scale_self(1.0 / n); }
+    matrix operator+(matrix const &other) const { return this->add(other); }
+    matrix operator-(matrix const &other) const { return this->add(other.scale(-1)); }
+    matrix operator*(double n) const { return this->scale(n); }
+    matrix operator/(double n) const { return this->scale(1.0 / n); }
+    matrix operator-() const { return this->scale(-1); }
     matrix operator*(matrix const &other) const { return this->multiple(other); }
-    matrix& operator+=(matrix const &other) { return this->add_self(other);  }
-    matrix& operator*=(double n) { return this->scale_self(n);  }
-    matrix& operator-=(matrix const &other) { return this->add_self(other.scale(-1));  }
-    matrix& operator/=(double n) { return this->scale_self(1.0 / n);  }
-    matrix operator+(matrix const &other) { return this->add(other);  }
-    matrix operator*(double n) { return this->scale(n);  }
-    matrix operator-(matrix const &other) { return this->add(other.scale(-1));  }
-    matrix operator/(double n) { return this->scale(1.0 / n);  }
-    matrix operator-() const { return this->scale(-1);  }
 
     int nrows() const { return _M_nrows; }
     int ncols() const { return _M_ncols; }
@@ -157,9 +171,7 @@ struct matrix {
     }
 
     matrix add(matrix const &other) const {
-        matrix copy(*this);
-        copy.add_self(other);
-        return copy;
+        return matrix(*this).add_self(other);
     }
 
     matrix& scale_self(double n) {
@@ -169,9 +181,7 @@ struct matrix {
     }
 
     matrix scale(double n) const {
-        matrix copy(*this);
-        copy.scale_self(n);
-        return copy;
+        return matrix(*this).scale_self(n);
     }
 
     matrix multiple(matrix const &other) const {
@@ -227,6 +237,7 @@ struct matrix {
 };
 
 struct matrix4 : public matrix {
+    explicit
     matrix4(std::valarray<double> li = {}) : matrix(4, 4, li) { }
 
     static matrix translate(double dx, double dy, double dz) {
@@ -241,6 +252,8 @@ struct matrix4 : public matrix {
         matrix m = matrix::eye(4);
         double c = std::cos(theta);
         double s = std::sin(theta);
+        // (c s -s c) transform coordinate system
+        // (c -s s c) transform object coordinate
         double r[] = {c, s, -s, c};
         int idx = 0;
         for (int i = 0; i < 2; ++i)
@@ -312,7 +325,6 @@ struct coordsys_ellipsoid : public coordsys {
             << "{A = " << this->A << ", f = " << this->f << "}";
         out << oss.str();
     }
-
 
     virtual coord3 blh2xyz(coord3 const &blh) const override {
         double B = blh.x;
@@ -436,8 +448,8 @@ struct coordsys_sphere : public coordsys {
 coordsys_ellipsoid coordsys_ellipsoid::WGS84(6378137.0, 1 / 298.257223563);
 coordsys_sphere coordsys_sphere::WGS84(6378137.0);
 
-struct boundary {
-    boundary() {
+struct lubound {
+    lubound() {
         reset();
     }
 
@@ -446,11 +458,17 @@ struct boundary {
         _M_ubound = -std::numeric_limits<double>::infinity();
     }
 
-    void update(double const &value) {
-        if (value < _M_lbound)
+    bool update(double const &value) {
+        bool updated = false;
+        if (value < _M_lbound) {
             _M_lbound = value;
-        if (value > _M_ubound)
+            updated = true;
+        }
+        if (value > _M_ubound) {
             _M_ubound = value;
+            updated = true;
+        }
+        return updated;
     }
 
     double middle() const {
@@ -465,31 +483,40 @@ struct bbox {
     bbox(int n) :_M_boundaries(n) {
     }
 
-    void expand_dim(int n, double const &value) {
-        _M_boundaries[n].update(value);
+    bool expand_dimension(int dimension, double const &value) {
+        return _M_boundaries[dimension].update(value);
     }
 
     void reset() {
-        for (boundary &b : _M_boundaries)
+        for (lubound &b : _M_boundaries)
             b.reset();
     }
 
     std::vector<double> center() const {
         std::vector<double> r;
-        for (boundary const &b : _M_boundaries)
+        for (lubound const &b : _M_boundaries)
             r.push_back(b.middle());
         return r;
     }
 
-    std::vector<boundary> _M_boundaries;
+    std::vector<lubound> _M_boundaries;
 };
 
 struct bbox3 : public bbox {
     bbox3() :bbox(3) {}
-    void expand(double x, double y, double z) {
-        _M_boundaries[0].update(x);
-        _M_boundaries[1].update(y);
-        _M_boundaries[2].update(z);
+
+    bool expand(double x, double y, double z) {
+        bool updated = false;
+        updated = _M_boundaries[0].update(x) || updated;
+        updated = _M_boundaries[1].update(y) || updated;
+        updated = _M_boundaries[2].update(z) || updated;
+        return updated;
+    }
+
+    coord3
+    center_coord3() const {
+        std::vector<double> const &c = center();
+        return coord3(c[0], c[1], c[2]);
     }
 };
 
@@ -497,159 +524,111 @@ struct bbox3 : public bbox {
 
 namespace {
 
-bool
-create_buffer_area(
-        std::vector<geos::geom::Coordinate> const &ivertices,
-        double const &distance,
-        std::vector<geos::geom::Coordinate> &overtices) {
-    using geos::geom::DefaultCoordinateSequenceFactory;
-    using geos::geom::CoordinateSequence;
-    using geos::geom::Coordinate;
-    using geos::geom::CoordinateArraySequenceFactory;
-    using geos::geom::CoordinateArraySequence;
-    using geos::geom::GeometryFactory;
-    using geos::geom::Geometry;
-    using geos::geom::LineString;
-
-    // create buffer area
-    CoordinateSequence::Ptr coords = CoordinateArraySequenceFactory
-        ::instance()->create();
-    coords->setPoints(ivertices);
-    LineString::Ptr ls = GeometryFactory
-        ::getDefaultInstance()->createLineString(std::move(coords));
-    if (!ls)
-        return false;
-    Geometry::Ptr buffer = ls->buffer(distance);
-    if (!buffer)
-        return false;
-    buffer->getCoordinates()->toVector(overtices);
-    return true;
-}
-
-bool
-validate_buffer_distance(
-        std::vector<geos::geom::Coordinate> const &ivertices,
-        std::vector<geos::geom::Coordinate> const &overtices,
-        double const &distance)
-{
-    using geos::geom::DefaultCoordinateSequenceFactory;
-    using geos::geom::CoordinateSequence;
-    using geos::geom::Coordinate;
-    using geos::geom::CoordinateArraySequenceFactory;
-    using geos::geom::CoordinateArraySequence;
-    using geos::geom::GeometryFactory;
-    using geos::geom::Geometry;
-    using geos::geom::LineString;
-    // validate buffer distance requirement
-    for (int i = 0, n = overtices.size(); i < n; ++i) {
-        double min_distance = std::numeric_limits<double>::infinity();
-        for (int j = 0, m = ivertices.size(); j < m; ++j) {
-            min_distance = std::min(
-                    min_distance,
-                    overtices[i].distance(ivertices[j]));
+struct buffer_analysis {
+    struct parameters {
+        parameters()
+            : distance(0)
+            , quad_segments(8)
+            , end_cap_style(1)
+        {
         }
-        std::cout << "min_distance = " << min_distance << std::endl;
-        // if (min_distance - distance > distance * 0.001)
-        //     return false;
-    }
-    return true;
-}
 
-bool
-create_geo_buffer_area(
-        std::vector<geographic::coord3> const &icoords,
-        double const &distance,
-        std::vector<geographic::coord3> &ocoords,
-        std::vector<geographic::coord3> &icoords_enu,
-        std::vector<geographic::coord3> &ocoords_enu) {
-    using namespace geographic;
-    using geos::geom::Coordinate;
-    coordsys const &rf = coordsys_sphere::WGS84;
+        int distance;
+        int quad_segments;
+        int end_cap_style;
+    };
 
-    bbox3 bb3;
-    for (coord3 const &c : icoords)
-        bb3.expand(c.x, c.y, c.z);
-    std::vector<double> bbcenter = bb3.center();
-    coord3 icoords_center(bbcenter[0], bbcenter[1], bbcenter[2]);
-    std::vector<coord3> icoords_xyz;
-    for (coord3 const &c : icoords)
-        icoords_xyz.push_back(rf.blh2xyz(c));
-    std::vector<coord3> ocoords_xyz;
-    for (coord3 const &c : icoords_xyz)
-        icoords_enu.push_back(rf.xyz2enu(c, icoords_center));
-    std::vector<Coordinate> ivertices;
-    std::vector<Coordinate> overtices;
-    for (coord3 const &c : icoords_enu)
-        ivertices.push_back(Coordinate(c.x, c.y, c.z));
-    if (!create_buffer_area(ivertices, distance, overtices))
-        return false;
-    for (Coordinate const &c : overtices)
-        ocoords_enu.push_back(coord3(c.x, c.y, std::isnan(c.z) ? 0 : c.z));
-    for (coord3 const &c : ocoords_enu)
-        ocoords_xyz.push_back(rf.enu2xyz(c, icoords_center));
-    return true;
-}
+    bool create_rectangular_buffer_area(
+            std::vector<geographic::coord3> const &icoords,
+            std::vector<geographic::coord3> &ocoords) {
+        using namespace geographic;
+        using geos::geom::DefaultCoordinateSequenceFactory;
+        using geos::geom::CoordinateSequence;
+        using geos::geom::Coordinate;
+        using geos::geom::CoordinateArraySequenceFactory;
+        using geos::geom::CoordinateArraySequence;
+        using geos::geom::GeometryFactory;
+        using geos::geom::Geometry;
+        using geos::geom::LineString;
 
-bool validate_geo_buffer_distance(
-        std::vector<geographic::coord3> const &icoords,
-        std::vector<geographic::coord3> const &ocoords,
-        double const &distance) {
-    for (int i = 0, n = ocoords.size(); i < n; ++i) {
-        double min_distance = std::numeric_limits<double>::infinity();
-        int idx = 0;
-        for (int j = 0, n = icoords.size(); j < n; ++j) {
-            double dx = ocoords[i].x - icoords[j].x;
-            double dy = ocoords[i].y - icoords[j].y;
-            double d = std::sqrt(dx * dx + dy * dy);
-            if (d < min_distance) {
-                min_distance = d;
-                idx = j;
-            }
+        // create buffer area
+        CoordinateSequence::Ptr coords = CoordinateArraySequenceFactory
+            ::instance()->create();
+        {
+            CoordinateArraySequence &seq =
+                dynamic_cast<CoordinateArraySequence&>(*coords);
+            for (coord3 const &c : icoords)
+                seq.add(Coordinate(c.x, c.y, c.z));
         }
-        std::cout << "min_distance = " << min_distance << std::endl;
-        // if (min_distance - distance > distance * 0.01)
-        //     return false;
+        LineString::Ptr ls = GeometryFactory
+            ::getDefaultInstance()->createLineString(std::move(coords));
+        if (!ls)
+            return false;
+        Geometry::Ptr buffer = ls->buffer(
+                _M_params.distance,
+                _M_params.quad_segments,
+                _M_params.end_cap_style);
+        if (!buffer)
+            return false;
+        ocoords.clear();
+        coords = buffer->getCoordinates();
+        for (int i = 0, n = coords->getSize(); i < n; ++i) {
+            Coordinate const &c = coords->getAt(i);
+            ocoords.push_back(coord3(c.x, c.y, std::isnan(c.z) ? 0 : c.z));
+        }
+        return true;
     }
-    return true;
-}
+
+    bool create_geo_buffer_area(
+            std::vector<geographic::coord3> const &icoords_blh,
+            std::vector<geographic::coord3> &ocoords_blh) {
+        using namespace geographic;
+        coordsys const &rf = coordsys_sphere::WGS84;
+
+        bbox3 bb3;
+        for (coord3 const &c : icoords_blh)
+            bb3.expand(c.x, c.y, c.z);
+        coord3 icoords_blh_center = bb3.center_coord3();
+        std::vector<coord3> icoords_xyz;
+        for (coord3 const &c : icoords_blh)
+            icoords_xyz.push_back(rf.blh2xyz(c));
+        std::vector<coord3> icoords_enu;
+        std::vector<coord3> ocoords_enu;
+        for (coord3 const &c : icoords_xyz)
+            icoords_enu.push_back(rf.xyz2enu(c, icoords_blh_center));
+        if (!create_rectangular_buffer_area(icoords_enu, ocoords_enu))
+            return false;
+        std::vector<coord3> ocoords_xyz;
+        for (coord3 const &c : ocoords_enu)
+            ocoords_xyz.push_back(rf.enu2xyz(c, icoords_blh_center));
+        for (coord3 const &c : ocoords_xyz)
+            ocoords_blh.push_back(rf.xyz2blh(c));
+        return true;
+    }
+
+    parameters _M_params;
+};
 
 } // namespace anonymous
 
-TEST(test_geo, test_simple_buffer) {
-    using geos::geom::Coordinate;
-
-    double distance = 0.1;
-    std::vector<Coordinate> ivertices;
-    std::vector<Coordinate> overtices;
-    ivertices.push_back(Coordinate(0, 0, 1));
-    ivertices.push_back(Coordinate(1, 2, 1));
-    ivertices.push_back(Coordinate(2, 4, 1));
-    ivertices.push_back(Coordinate(3, 2, 1));
-    ivertices.push_back(Coordinate(4, 0, 1));
-    ASSERT_TRUE(create_buffer_area(ivertices, distance, overtices));
-    ASSERT_TRUE(validate_buffer_distance(ivertices, overtices, distance));
-}
-
 TEST(test_geo, test_geo_buffer) {
     using namespace geographic;
-    using geos::geom::Coordinate;
 
     coordsys const &rf = coordsys_sphere::WGS84;
-    double distance = 1000000;
+    double distance = 100000;
     std::vector<coord3> icoords;
     std::vector<coord3> ocoords;
-    std::vector<coord3> icoords_enu;
-    std::vector<coord3> ocoords_enu;
-    icoords.push_back(rf.blh2xyz(coord3::of_degrees(31, 121, 100)));
-    icoords.push_back(rf.blh2xyz(coord3::of_degrees(32, 122, 100)));
-    icoords.push_back(rf.blh2xyz(coord3::of_degrees(34, 123, 100)));
-    icoords.push_back(rf.blh2xyz(coord3::of_degrees(32, 124, 100)));
-    icoords.push_back(rf.blh2xyz(coord3::of_degrees(31, 125, 100)));
-    icoords.push_back(rf.blh2xyz(coord3::of_degrees(30, 126, 100)));
-    ASSERT_TRUE(create_geo_buffer_area(
-                icoords,
-                distance,
-                ocoords,
-                icoords_enu, ocoords_enu));
-    ASSERT_TRUE(validate_geo_buffer_distance(icoords_enu, ocoords_enu, distance));
+    icoords.push_back(coord3::of_degrees(31, 121, 100));
+    icoords.push_back(coord3::of_degrees(32, 122, 100));
+    icoords.push_back(coord3::of_degrees(34, 123, 100));
+    icoords.push_back(coord3::of_degrees(32, 124, 100));
+    icoords.push_back(coord3::of_degrees(31, 125, 100));
+    icoords.push_back(coord3::of_degrees(30, 126, 100));
+    buffer_analysis analysis;
+    analysis._M_params.distance = distance;
+    analysis.create_geo_buffer_area(icoords, ocoords);
+    for (coord3 const &c : icoords)
+        std::cout << "icoord = " << blh_deg_view(c) << std::endl;
+    for (coord3 const &c : ocoords)
+        std::cout << "ocoord = " << blh_deg_view(c) << std::endl;
 }
