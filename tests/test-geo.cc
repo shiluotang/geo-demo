@@ -1,5 +1,6 @@
 #include <cmath>
 #include <cassert>
+#include <initializer_list>
 #include <ostream>
 #include <sstream>
 #include <iomanip>
@@ -126,16 +127,17 @@ struct matrix {
     matrix(
         int nrows,
         int ncols,
-        std::valarray<double> li = {})
+        std::valarray<double> const &li = {})
         : _M_nrows(nrows)
         , _M_ncols(ncols)
         , _M_data(nrows * ncols)
     {
         // FIXME _SCL_SECURE_NO_WARNINGS
         // std::copy_n(std::begin(li), nrows * ncols, std::begin(_M_data));
+        auto it = std::begin(li);
         for (std::size_t i = 0, n = std::min<size_t>(li.size(), nrows * ncols);
                 i < n; ++i)
-            _M_data[i] = li[i];
+            _M_data[i] = *it++;
     }
 
     double elem(int i, int j) const { return _M_data[i * _M_ncols + j]; }
@@ -238,7 +240,7 @@ struct matrix {
 
 struct matrix4 : public matrix {
     explicit
-    matrix4(std::valarray<double> li = {}) : matrix(4, 4, li) { }
+    matrix4(std::valarray<double> const &li = {}) : matrix(4, 4, li) { }
 
     static matrix translate(double dx, double dy, double dz) {
         matrix m = matrix::eye(4);
@@ -615,7 +617,7 @@ TEST(test_geo, test_geo_buffer) {
     using namespace geographic;
 
     coordsys const &rf = coordsys_sphere::WGS84;
-    double distance = 100000;
+    double distance = 10000;
     std::vector<coord3> icoords;
     std::vector<coord3> ocoords;
     icoords.push_back(coord3::of_degrees(31, 121, 100));
